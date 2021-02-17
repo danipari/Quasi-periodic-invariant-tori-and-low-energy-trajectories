@@ -19,6 +19,13 @@
 #include "Tudat/Astrodynamics/Gravitation/unitConversionsCircularRestrictedThreeBodyProblem.h"
 #include "Tudat/Astrodynamics/OrbitDetermination/EstimatableParameters/estimatableParameter.h"
 
+bool TerminationCondition(double time, std::function< Eigen::VectorXd() > state)
+{
+    if (time > 200.0 * tudat::physical_constants::JULIAN_DAY)
+        return true;
+    return false;
+};
+
 int main( )
 {
     ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -28,6 +35,9 @@ int main( )
     using namespace tudat;
     using namespace tudat::input_output;
     using namespace tudat::simulation_setup;
+    using namespace tudat::propagators;
+    using namespace tudat::circular_restricted_three_body_problem;
+    using namespace tudat::estimatable_parameters;
 
     ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
     ///////////////////////     CREATE ENVIRONMENT AND VEHICLE       //////////////////////////////////////////////////////
@@ -38,18 +48,19 @@ int main( )
 
     // Define primaries
     string primary = "Sun";
-    string secondary = "Jupiter";
+    string secondary = "Earth";
 
     // // Set simulation time settings.
     double initialTime = 0.0;
 
     // Global characteristics of the problem
-    double distanceBodies = 778.0e9;
+    // (only if no normalized units are going to be used)
+    double distanceBodies = 147.83e9;
 
     // Initialise the spacecraft state (B. Taylor, D. (1981). Horseshoe periodic orbits in the restricted problem of three bodies
     // for a sun-Jupiter mass ratio. Astronomy and Astrophysics. 103. 288-294.)
     Eigen::Vector6d initialState = Eigen::Vector6d::Zero();
-    initialState[0] = - 7.992e11;
+    initialState[0] = - 140.83e9;
     initialState[4] =  -1.29e4;
 
     // Create body map.
@@ -63,8 +74,7 @@ int main( )
     bodiesToPropagate.push_back( "Spacecraft" );
     centralBodies.push_back( primary );  // SSB for Solar System Barycenter
 
-    NamedBodyMap bodyMap = propagators::setupBodyMapCR3BP(
-                distanceBodies, primary, secondary, "Spacecraft" );
+    NamedBodyMap bodyMap = setupBodyMapCR3BP(distanceBodies, primary, secondary, "Spacecraft" );
 
     ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
     ///////////////////////            CREATE ACCELERATIONS          //////////////////////////////////////////////////////
@@ -77,16 +87,15 @@ int main( )
     double gravitationalParameterSecondary = createGravityFieldModel(
                 getDefaultGravityFieldSettings(
                     secondary, TUDAT_NAN, TUDAT_NAN ), secondary )->getGravitationalParameter( );
-    double finalTime = tudat::circular_restricted_three_body_problem::convertDimensionlessTimeToDimensionalTime(
-                29.2386 * ( 2.0 * mathematical_constants::PI ), gravitationalParameterPrimary, gravitationalParameterSecondary, distanceBodies);
+    double finalTime = convertDimensionlessTimeToDimensionalTime(
+                1 * ( 2.0 * mathematical_constants::PI ), gravitationalParameterPrimary, gravitationalParameterSecondary, distanceBodies);
 
-    // Compute mass parameter
+    // Compute mass parameter.
     double massParameter = circular_restricted_three_body_problem::computeMassParameter(
                 gravitationalParameterPrimary, gravitationalParameterSecondary );
     std::cout << "Mass Parameter: " << massParameter << std::endl;
 
-    /// CR3BP problem
-    // Create acceleration map.
+    // CR3BP problem acceleration map.
     basic_astrodynamics::AccelerationMap accelerationModelMap = propagators::setupAccelerationMapCR3BP(
             primary, secondary, bodiesToPropagate.at( 0 ), centralBodies.at( 0 ), bodyMap );
 
@@ -94,21 +103,30 @@ int main( )
     ///////////////////////             CREATE PROPAGATION SETTINGS            ////////////////////////////////////////////
     ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
+    // Integration settings.
     const double fixedStepSize = 100000.0;
     std::shared_ptr< numerical_integrators::IntegratorSettings< > > integratorSettings =
             std::make_shared < numerical_integrators::IntegratorSettings < > >
             ( numerical_integrators::rungeKutta4, initialTime, fixedStepSize);
 
-    std::shared_ptr< propagators::TranslationalStatePropagatorSettings< double > > propagatorSettings =
-            std::make_shared< propagators::TranslationalStatePropagatorSettings< double > >(
-                centralBodies, accelerationModelMap, bodiesToPropagate, initialState, finalTime );
+    // Termination condition
+    std::function< Eigen::VectorXd( ) > spacecraftStateFunction =
+            std::bind( &Body::getState, bodyMap.at( "Spacecraft" ) );
+    std::shared_ptr< PropagationTerminationSettings > terminationSettings =
+            std::make_shared< PropagationCustomTerminationSettings >(
+                std::bind( &TerminationCondition, std::placeholders::_1, spacecraftStateFunction ) );
+
+    // Define settings for propagation of translational dynamics.
+    std::shared_ptr< TranslationalStatePropagatorSettings< double > > propagatorSettings =
+            std::make_shared< TranslationalStatePropagatorSettings< double > >(
+                centralBodies, accelerationModelMap, bodiesToPropagate, initialState, terminationSettings);
 
     // Define list of parameters to estimate.
-    std::vector< std::shared_ptr<estimatable_parameters::EstimatableParameterSettings > > parameterNames;
-    parameterNames.push_back( std::make_shared< estimatable_parameters::InitialTranslationalStateEstimatableParameterSettings< double > >(
+    std::vector< std::shared_ptr<EstimatableParameterSettings > > parameterNames;
+    parameterNames.push_back( std::make_shared< InitialTranslationalStateEstimatableParameterSettings< double > >(
                                   "Spacecraft", initialState, "Earth" ) );
-    // Create parameters
-    std::shared_ptr< estimatable_parameters::EstimatableParameterSet< double > > parametersToEstimate =
+    // Create parameters.
+    std::shared_ptr< EstimatableParameterSet< double > > parametersToEstimate =
             createParametersToEstimate( parameterNames, bodyMap );
 
     // Print identifiers and indices of parameters to terminal.
@@ -116,25 +134,29 @@ int main( )
 
     // Create simulation object and propagate dynamics.
     propagators::SingleArcVariationalEquationsSolver< > variationalEquationsSimulator(
-                bodyMap, integratorSettings, propagatorSettings, parametersToEstimate, true,
-                std::shared_ptr< numerical_integrators::IntegratorSettings< double > >( ), false, true );
+                bodyMap, integratorSettings, propagatorSettings, parametersToEstimate, false,
+                std::shared_ptr< numerical_integrators::IntegratorSettings< double > >( ), false, false );
 
     ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
     ///////////////////////             PROPAGATE ORBIT            ////////////////////////////////////////////////////////
     ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
+    std::cout << "Propagating..." << std::endl;
+    variationalEquationsSimulator.integrateVariationalAndDynamicalEquations(initialState, true);
+    std::cout << "Propagation Finished!..." << std::endl;
+
     std::map< double, Eigen::VectorXd> cr3bpPropagation =
             variationalEquationsSimulator.getDynamicsSimulator( )->getEquationsOfMotionNumericalSolution( );
     std::map< double, Eigen::MatrixXd > stateTransitionResult =
             variationalEquationsSimulator.getNumericalVariationalEquationsSolution( ).at( 0 );
-    /*std::map< double, Eigen::MatrixXd > sensitivityResult =
-            variationalEquationsSimulator.getNumericalVariationalEquationsSolution( ).at( 1 );*/
+    std::map< double, Eigen::MatrixXd > sensitivityResult =
+            variationalEquationsSimulator.getNumericalVariationalEquationsSolution( ).at( 1 );
 
     // Transform to normalized corotating coordinates
     std::map< double, Eigen::Vector6d > cr3bpNormalisedCoRotatingFrame;
     for( std::map< double, Eigen::VectorXd >::iterator itr = cr3bpPropagation.begin( );
         itr != cr3bpPropagation.end( ); itr++ ){
-        cr3bpNormalisedCoRotatingFrame[ itr->first ] = tudat::circular_restricted_three_body_problem::convertCartesianToCorotatingNormalizedCoordinates(
+        cr3bpNormalisedCoRotatingFrame[ itr->first ] = convertCartesianToCorotatingNormalizedCoordinates(
             gravitationalParameterPrimary, gravitationalParameterSecondary, distanceBodies, itr->second, itr->first);
         }
 
@@ -143,6 +165,7 @@ int main( )
     ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
     {
+        std::cout << "Writing files..." << std::endl;
         // Write normalized corotating frame state
         input_output::writeDataMapToTextFile( cr3bpNormalisedCoRotatingFrame,
                                               "CR3BPnormalisedCoRotatingFrame.dat",
