@@ -12,16 +12,17 @@
 #include "Tudat/Astrodynamics/Gravitation/unitConversionsCircularRestrictedThreeBodyProblem.h"
 #include "Tudat/SimulationSetup/PropagationSetup/propagationCR3BPFullProblem.h"
 
-#include <Tudat/SimulationSetup/tudatSimulationHeader.h>
-#include <Tudat/InputOutput/basicInputOutput.h>
 #include "Thesis/applicationOutput.h"
+#include <Tudat/InputOutput/basicInputOutput.h>
+#include "Tudat/Mathematics/RootFinders/rootFinder.h"
+#include <Tudat/SimulationSetup/tudatSimulationHeader.h>
 #include "Tudat/Astrodynamics/Ephemerides/approximatePlanetPositions.h"
 #include "Tudat/Astrodynamics/Gravitation/unitConversionsCircularRestrictedThreeBodyProblem.h"
 #include "Tudat/Astrodynamics/OrbitDetermination/EstimatableParameters/estimatableParameter.h"
 
-bool TerminationCondition(double time, std::function< Eigen::VectorXd() > state)
+bool TerminationCondition(double time, std::function< Eigen::VectorXd() > stateSpacecraft)
 {
-    if (time > 200.0 * tudat::physical_constants::JULIAN_DAY)
+    if ((time > 10) && (abs(stateSpacecraft()[0]) < 1E-6) && (stateSpacecraft()[5] > 0))
         return true;
     return false;
 };
@@ -143,7 +144,7 @@ int main( )
 
     std::cout << "Propagating..." << std::endl;
     variationalEquationsSimulator.integrateVariationalAndDynamicalEquations(initialState, true);
-    std::cout << "Propagation Finished!..." << std::endl;
+    std::cout << "Propagation Finished!" << std::endl;
 
     std::map< double, Eigen::VectorXd> cr3bpPropagation =
             variationalEquationsSimulator.getDynamicsSimulator( )->getEquationsOfMotionNumericalSolution( );
@@ -159,6 +160,24 @@ int main( )
         cr3bpNormalisedCoRotatingFrame[ itr->first ] = convertCartesianToCorotatingNormalizedCoordinates(
             gravitationalParameterPrimary, gravitationalParameterSecondary, distanceBodies, itr->second, itr->first);
         }
+
+    std::cout << "Computing Lagrange point..." << std::endl;
+    // Create LibrationPoint  object
+    std::shared_ptr< root_finders::NewtonRaphsonCore< double > > rootFinder =
+            std::make_shared< root_finders::NewtonRaphsonCore< double >>(1e-12, 100);
+    LibrationPoint librationPoint = LibrationPoint(massParameter, rootFinder);
+    // Select point
+    librationPoint.computeLocationOfLibrationPoint(librationPoint.l1);
+    // Retrieve point
+    Eigen::Vector3d pointLagrange = librationPoint.getLocationOfLagrangeLibrationPoint();
+    // Print result
+    std::cout << "( " << pointLagrange[0] << ", " << pointLagrange[1] << ", " << pointLagrange[2] << " )" << std::endl;
+
+
+    // Computing Newton-Rapson of function
+    Eigen::VectorXd intialPeriodicCondition(7);
+    intialPeriodicCondition << 0, 0.8, 0, 0, 0.1, 0;
+
 
     ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
     ///////////////////////        PROVIDE OUTPUT TO CONSOLE AND FILES           //////////////////////////////////////////
