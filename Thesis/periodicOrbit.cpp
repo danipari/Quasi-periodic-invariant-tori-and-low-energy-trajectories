@@ -41,8 +41,11 @@ public:
           rootFinder( aRootFinder )
     { }
 
-    Eigen::Vector3d getLocationOfLagrangeLibrationPoint( )
+    Eigen::Vector6d getLocationOfLagrangeLibrationPoint( )
     {
+        if (distLagrangePoint == 0)
+            throw std::invalid_argument( "pointLagrange argument not valid" );
+
         return periodicInitialState_;
     }
 
@@ -76,22 +79,22 @@ public:
             rootFunction->addBinding( -1, std::bind( &PeriodicOrbitApproximation::
                     computePlanarLyapunovInitialStateFunctionDerivative, this, std::placeholders::_1 ) );
 
-            periodicInitialState_ << rootFinder->execute( rootFunction, -0.001 ), 0.0, 0.0;
+            double solRoot = rootFinder->execute( rootFunction, -0.001 );
+            periodicInitialState_ << solRoot, 0.0, 0.0 , -solRoot * firstOrderConstants.at("w0"), 0.0, 0.0;
         }
     }
 
 private:
     const double massParameter;
-    double pointLagrange;
+    double distLagrangePoint = 0;
     const tudat::root_finders::RootFinderPointer rootFinder;
-    Eigen::Vector3d periodicInitialState_;
+    Eigen::Vector6d periodicInitialState_;
     std::map< string, double> firstOrderConstants;
 
     std::map< string, double> computeConstants( int numberLagrange)
     {
         std::map< string, double> constants;
-        pointLagrange = computeDistaceToPrimary( numberLagrange );
-        double dPrimary = 1 - massParameter - computeDistaceToPrimary( numberLagrange );
+        double dPrimary = (1 - massParameter) - computeDistaceToPrimary( numberLagrange );
         double c2 = 0;
         switch(numberLagrange) {
            case 1 :
@@ -120,36 +123,38 @@ private:
                 tudat::circular_restricted_three_body_problem::LibrationPoint(massParameter, rootFinder);
         switch (numberLagrange) {
             case 1 :
-                librationPoint.computeLocationOfLibrationPoint(librationPoint.l1);
+                librationPoint.computeLocationOfLibrationPoint( librationPoint.l1 );
                 break;
             case 2 :
-                librationPoint.computeLocationOfLibrationPoint(librationPoint.l2);
+                librationPoint.computeLocationOfLibrationPoint( librationPoint.l2 );
                 break;
             case 3 :
-                librationPoint.computeLocationOfLibrationPoint(librationPoint.l3);
+                librationPoint.computeLocationOfLibrationPoint( librationPoint.l3 );
                 break;
             default :
                throw std::invalid_argument( "Langrange point not valid. Only L1,2,3." );
             }
+
         Eigen::Vector3d pointLagrange = librationPoint.getLocationOfLagrangeLibrationPoint();
         return pointLagrange;
     }
 
     double computeDistaceToPrimary( int numberLagrange )
     {
-        return computeLagrangePoint(numberLagrange)[0];
+        this->distLagrangePoint = computeLagrangePoint(numberLagrange)[0];
+        return distLagrangePoint;
     }
 
     double computePlanarLyapunovInitialStateFunction( double alpha )
     {
-        return (alpha + pointLagrange) * (alpha + pointLagrange) + 2 * (1 - massParameter) / (massParameter + (alpha + pointLagrange)) +
-                2 * massParameter / (1 - massParameter - (alpha + pointLagrange)) + pow((firstOrderConstants.at("w0") * (alpha + pointLagrange)), 2) - 6.5;
+        return (alpha + distLagrangePoint) * (alpha + distLagrangePoint) + 2 * (1 - massParameter) / (massParameter + (alpha + distLagrangePoint)) +
+                2 * massParameter / (1 - massParameter - (alpha + distLagrangePoint)) + pow((firstOrderConstants.at("w0") * (alpha + distLagrangePoint)), 2) - 6;
     }
 
     double computePlanarLyapunovInitialStateFunctionDerivative( double alpha )
     {
-        return 2 * (alpha + pointLagrange) - 2 * (1 - massParameter) / pow((massParameter + (alpha + pointLagrange)), 2) +
-                2 * massParameter / pow((1 - massParameter - (alpha + pointLagrange)), 2) + 2 * pow(firstOrderConstants.at("w0"), 2) * (alpha + pointLagrange);
+        return 2 * (alpha + distLagrangePoint) - 2 * (1 - massParameter) / pow((massParameter + (alpha + distLagrangePoint)), 2) +
+                2 * massParameter / pow((1 - massParameter - (alpha + distLagrangePoint)), 2) + 2 * pow(firstOrderConstants.at("w0"), 2) * (alpha + distLagrangePoint);
     }
 };
 
@@ -166,9 +171,9 @@ int main( )
     // Select point
     initialState.approxInitialStatePeriodicOrbit(initialState.l1, initialState.planarLyapunov);
     // Retrieve point
-    Eigen::Vector3d pointLagrange = initialState.getLocationOfLagrangeLibrationPoint();
+    Eigen::Vector6d pointsLagrange = initialState.getLocationOfLagrangeLibrationPoint();
     // Print result
-    std::cout << "( " << pointLagrange[0] << ", " << pointLagrange[1] << ", " << pointLagrange[2] << " )" << std::endl;
+    std::cout << pointsLagrange << std::endl;
 
     // Final statement.
     // The exit code EXIT_SUCCESS indicates that the program was successfully executed.

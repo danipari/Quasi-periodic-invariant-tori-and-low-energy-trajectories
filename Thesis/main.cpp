@@ -22,7 +22,7 @@
 
 bool TerminationCondition(double time, std::function< Eigen::VectorXd() > stateSpacecraft)
 {
-    if ((time > 10) && (abs(stateSpacecraft()[0]) < 1E-6) && (stateSpacecraft()[5] > 0))
+    if ((time > 1000.0 * tudat::physical_constants::JULIAN_DAY))
         return true;
     return false;
 };
@@ -57,12 +57,6 @@ int main( )
     // Global characteristics of the problem
     // (only if no normalized units are going to be used)
     double distanceBodies = 147.83e9;
-
-    // Initialise the spacecraft state (B. Taylor, D. (1981). Horseshoe periodic orbits in the restricted problem of three bodies
-    // for a sun-Jupiter mass ratio. Astronomy and Astrophysics. 103. 288-294.)
-    Eigen::Vector6d initialState = Eigen::Vector6d::Zero();
-    initialState[0] = - 140.83e9;
-    initialState[4] =  -1.29e4;
 
     // Create body map.
     std::vector < std::string > bodiesCR3BP;
@@ -99,6 +93,14 @@ int main( )
     // CR3BP problem acceleration map.
     basic_astrodynamics::AccelerationMap accelerationModelMap = propagators::setupAccelerationMapCR3BP(
             primary, secondary, bodiesToPropagate.at( 0 ), centralBodies.at( 0 ), bodyMap );
+
+    // Initialise the spacecraft state (B. Taylor, D. (1981). Horseshoe periodic orbits in the restricted problem of three bodies
+    // for a sun-Jupiter mass ratio. Astronomy and Astrophysics. 103. 288-294.)
+    Eigen::Vector6d initialStateNormalized = Eigen::Vector6d::Zero();
+    initialStateNormalized[0] =  0.990027-0.176715;
+    initialStateNormalized[4] =  0.368697;
+    Eigen::Vector6d initialState = circular_restricted_three_body_problem::convertCorotatingNormalizedToCartesianCoordinates(
+                gravitationalParameterPrimary, gravitationalParameterSecondary, distanceBodies, initialStateNormalized, 0);
 
     ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
     ///////////////////////             CREATE PROPAGATION SETTINGS            ////////////////////////////////////////////
