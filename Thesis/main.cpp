@@ -20,9 +20,11 @@
 #include "Tudat/Astrodynamics/Gravitation/unitConversionsCircularRestrictedThreeBodyProblem.h"
 #include "Tudat/Astrodynamics/OrbitDetermination/EstimatableParameters/estimatableParameter.h"
 
+#include "periodicOrbit.cpp"
+
 bool TerminationCondition(double time, std::function< Eigen::VectorXd() > stateSpacecraft)
 {
-    if ((time > 1000.0 * tudat::physical_constants::JULIAN_DAY))
+    if ((time > 200.0 * tudat::physical_constants::JULIAN_DAY))
         return true;
     return false;
 };
@@ -94,11 +96,13 @@ int main( )
     basic_astrodynamics::AccelerationMap accelerationModelMap = propagators::setupAccelerationMapCR3BP(
             primary, secondary, bodiesToPropagate.at( 0 ), centralBodies.at( 0 ), bodyMap );
 
-    // Initialise the spacecraft state (B. Taylor, D. (1981). Horseshoe periodic orbits in the restricted problem of three bodies
-    // for a sun-Jupiter mass ratio. Astronomy and Astrophysics. 103. 288-294.)
-    Eigen::Vector6d initialStateNormalized = Eigen::Vector6d::Zero();
-    initialStateNormalized[0] =  0.990027-0.176715;
-    initialStateNormalized[4] =  0.368697;
+    std::shared_ptr< root_finders::NewtonRaphsonCore< double > > rootFinder =
+            std::make_shared< root_finders::NewtonRaphsonCore< double >>(1e-12, 100);
+    // Get approximate initial condition
+    PeriodicOrbitApproximation approxInitialState = PeriodicOrbitApproximation(massParameter, rootFinder);
+    approxInitialState.approxInitialStatePeriodicOrbit(3.000890, approxInitialState.l1, approxInitialState.planarLyapunov);
+    Eigen::Vector6d initialStateNormalized = approxInitialState.getApproxInitialStatePeriodicOrbit();
+
     Eigen::Vector6d initialState = circular_restricted_three_body_problem::convertCorotatingNormalizedToCartesianCoordinates(
                 gravitationalParameterPrimary, gravitationalParameterSecondary, distanceBodies, initialStateNormalized, 0);
 
@@ -107,7 +111,7 @@ int main( )
     ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
     // Integration settings.
-    const double fixedStepSize = 100000.0;
+    const double fixedStepSize = 10000.0; //100000.0;
     std::shared_ptr< numerical_integrators::IntegratorSettings< > > integratorSettings =
             std::make_shared < numerical_integrators::IntegratorSettings < > >
             ( numerical_integrators::rungeKutta4, initialTime, fixedStepSize);
@@ -165,8 +169,6 @@ int main( )
 
     std::cout << "Computing Lagrange point..." << std::endl;
     // Create LibrationPoint  object
-    std::shared_ptr< root_finders::NewtonRaphsonCore< double > > rootFinder =
-            std::make_shared< root_finders::NewtonRaphsonCore< double >>(1e-12, 100);
     LibrationPoint librationPoint = LibrationPoint(massParameter, rootFinder);
     // Select point
     librationPoint.computeLocationOfLibrationPoint(librationPoint.l1);
@@ -179,7 +181,6 @@ int main( )
     // Computing Newton-Rapson of function
     Eigen::VectorXd intialPeriodicCondition(7);
     intialPeriodicCondition << 0, 0.8, 0, 0, 0.1, 0;
-
 
     ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
     ///////////////////////        PROVIDE OUTPUT TO CONSOLE AND FILES           //////////////////////////////////////////
