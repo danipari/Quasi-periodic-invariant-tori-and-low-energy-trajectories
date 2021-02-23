@@ -176,3 +176,11 @@ add_executable(application_main "${SRCROOT}/main.cpp")
 setup_executable_target(application_main "${SRCROOT}")
 target_link_libraries(application_main ${TUDAT_ESTIMATION_LIBRARIES} ${Boost_LIBRARIES} )
 
+add_executable(application_periodic "${SRCROOT}/periodicOrbit.cpp")
+setup_executable_target(application_periodic "${SRCROOT}")
+target_link_libraries(application_periodic ${TUDAT_ESTIMATION_LIBRARIES} ${Boost_LIBRARIES} )
+
+add_executable(application_periodic_approx "${SRCROOT}/periodicOrbitApproximation.cpp")
+setup_executable_target(application_periodic_approx "${SRCROOT}")
+target_link_libraries(application_periodic_approx ${TUDAT_ESTIMATION_LIBRARIES} ${Boost_LIBRARIES} )
+

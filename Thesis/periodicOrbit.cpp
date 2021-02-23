@@ -74,13 +74,13 @@ public:
                               bool verbose=false, double initialGuess=0.0)
     {
         Eigen::Vector6d initialState = getApproximateInitalState(energyLevel, lagrangeLibrationPoint, orbitFamily, verbose, initialGuess);
-
-
-        double xDotError = 100;
-        std::map< double, Eigen::VectorXd> cr3bpPropagation;
-        for ( int i = 0; i < 1; i++)
-        {
+        std::cout << "initialState: " << initialState << std::endl;
         propagators::SingleArcVariationalEquationsSolver< > variationalEquationsSimulator = setUpProgragation(0.0);
+
+        //double xDotError = 100;
+        std::map< double, Eigen::VectorXd> cr3bpPropagation;
+        for ( int i = 0; i < 3; i++)
+        {   
         variationalEquationsSimulator.integrateVariationalAndDynamicalEquations(initialState, true);
 
         cr3bpPropagation = variationalEquationsSimulator.getDynamicsSimulator( )->getEquationsOfMotionNumericalSolution( );
@@ -91,27 +91,31 @@ public:
 
         Eigen::Vector6d lastCr3bpStateNormalized = convertCartesianToCorotatingNormalizedCoordinates(
                     gravitationalParameterPrimary, gravitationalParameterSecondary, distanceBodies, (--cr3bpPropagation.end( ))->second, (--cr3bpPropagation.end( ))->first);
-        auto lastStateTransition = (--stateTransitionResult.end())->second;
 
-        xDotError = lastCr3bpStateNormalized[3];
-        Eigen::Vector6d xDotErrorVector;
-        xDotErrorVector << 0, 0, 0, -xDotError, 0, 0;
-        Eigen::Vector6d cartesianErrorVector = convertCorotatingNormalizedToCartesianCoordinates(
-                    gravitationalParameterPrimary, gravitationalParameterSecondary, distanceBodies, xDotErrorVector, (--cr3bpPropagation.end( ))->first);
+        //std::cout << "lastCr3bpStateNormalized: " << lastCr3bpStateNormalized << std::endl;
+        double xDotError = lastCr3bpStateNormalized[3];
+        auto StateTransitionCartesian = (--stateTransitionResult.end())->second;
 
-        Eigen::Vector6d cartesianCorrectionMulti = lastStateTransition.inverse() * cartesianErrorVector;
-        Eigen::Vector6d correctionNormalizedMulti = convertCartesianToCorotatingNormalizedCoordinates(
-                            gravitationalParameterPrimary, gravitationalParameterSecondary, distanceBodies, cartesianCorrectionMulti, cr3bpPropagation.begin( )->first);
+        double initalTimeCR3BP = convertDimensionalTimeToDimensionlessTime( cr3bpPropagation.begin( )->first,
+                                 gravitationalParameterPrimary, gravitationalParameterSecondary, distanceBodies);
+        double finalTime = (--cr3bpPropagation.end( ))->first;
 
-        Eigen::Vector6d correctionNormalized;
-        correctionNormalized << 0, 0, 0, 0, correctionNormalizedMulti.dot(Eigen::VectorXd::Unit(6,4)), 0;
-        Eigen::Vector6d cartesianCorrection = convertCorotatingNormalizedToCartesianCoordinates(
-                    gravitationalParameterPrimary, gravitationalParameterSecondary, distanceBodies, correctionNormalized, cr3bpPropagation.begin( )->first);
+        auto StateTransition = CartesianStateTransitionMatrixtoCR3BP(StateTransitionCartesian,
+                                 gravitationalParameterPrimary, gravitationalParameterSecondary, distanceBodies, initalTimeCR3BP, finalTime);
 
-        initialState += cartesianCorrection;
+        Eigen::Vector6d correctionCR3BP;
+        correctionCR3BP << 0, 0, 0, 0, -xDotError / StateTransition(3,4), 0;
 
-        std::cout << "y:" << lastCr3bpStateNormalized[1] << std::endl;
-        std::cout << "xDot:" << xDotError << std::endl;
+        Eigen::Vector6d correctionCartesian = convertCorotatingNormalizedToCartesianCoordinates(
+                    gravitationalParameterPrimary, gravitationalParameterSecondary, distanceBodies, correctionCR3BP, initalTimeCR3BP);
+
+
+        std::cout << "xDotError: " << xDotError << std::endl;
+
+        //std::cout << "correctionCartesian: " << correctionCartesian << std::endl;
+
+        initialState += correctionCartesian;
+        //std::cout << "corrected: " << initialState << std::endl;
         }
 
         // Transform to normalized corotating coordinates
@@ -120,7 +124,7 @@ public:
             itr != cr3bpPropagation.end( ); itr++ ){
             cr3bpNormalisedCoRotatingFrame[ itr->first ] = convertCartesianToCorotatingNormalizedCoordinates(
                 gravitationalParameterPrimary, gravitationalParameterSecondary, distanceBodies, itr->second, itr->first);
-         }
+            }
 
         std::cout << "Writing files..." << std::endl;
         // Write normalized corotating frame state
@@ -131,6 +135,7 @@ public:
                                               std::numeric_limits< double >::digits10,
                                               std::numeric_limits< double >::digits10,
                                               "," );
+
     };
 
 private:
@@ -180,8 +185,6 @@ private:
 
     propagators::SingleArcVariationalEquationsSolver< > setUpProgragation( double initialTime )
     {
-
-
         // Termination condition
         auto TerminationCondition = [&](const double time, std::function< Eigen::VectorXd() > stateSpacecraft)
         {
@@ -226,7 +229,7 @@ private:
         // Define settings for propagation of translational dynamics.
         std::shared_ptr< propagators::TranslationalStatePropagatorSettings< double > > propagatorSettings =
                 std::make_shared< propagators::TranslationalStatePropagatorSettings< double > >(
-                    centralBodies, accelerationModelMap, bodiesToPropagate, initialState, terminationDependentSettings);
+                    centralBodies, accelerationModelMap, bodiesToPropagate, initialState, terminationCustomSettings);
 
         // Define list of parameters to estimate.
         std::vector< std::shared_ptr<estimatable_parameters::EstimatableParameterSettings > > parameterNames;
