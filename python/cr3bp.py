@@ -6,6 +6,7 @@ from odeintw import odeintw
 import matplotlib.pyplot as plt
 import scipy.optimize as optimize
 import scipy.integrate as integrate
+from scipy.linalg import null_space
 from mpl_toolkits.mplot3d import Axes3D
 
 class Cr3bp:
@@ -123,14 +124,10 @@ class PeriodicOrbit(Cr3bp):
     class OrbitFamily(enum.Enum):
         planarLyapunov = 1; verticalLyapunov = 2; northHalo = 3; southHalo = 4
 
-    def runFullSimulationUntilTermination( self, initialState, initialTime, max_step=1, maxTime=5000.0):
-
-        ground_event = lambda t,x: x[2]
-        ground_event.terminal = True
-        ground_event.direction = -1
+    def runFullSimulationUntilTermination( self, initialState, initialTime, terminationFunction, max_step=1, maxTime=5000.0):
 
         tSpan = [initialTime, maxTime]
-        integrator = integrate.solve_ivp(self.modelDynamicsCR3BP, tSpan, initialState, max_step=max_step, events=ground_event, dense_output=True) 
+        integrator = integrate.solve_ivp(self.modelDynamicsCR3BP, tSpan, initialState, max_step=max_step, events=terminationFunction, dense_output=True) 
         stateTransFun = lambda y, t : self.stateTransitionDerivative(integrator.sol(t), y) 
         stateTransitionSolution = odeintw(stateTransFun, np.eye(6), [initialTime, integrator.t[-1]])
                 
@@ -140,20 +137,17 @@ class PeriodicOrbit(Cr3bp):
         initialState = approxInitialState
         error = 1
 
+        ground_event = lambda t,x: x[1]#x[2]
+        ground_event.terminal = True
+        ground_event.direction = -1
+
         if orbitFamily == self.OrbitFamily.planarLyapunov :
             while abs(error) > tol:
-                stateEvolution, stateTransition = self.runFullSimulationUntilTermination(initialState, initialTime, max_step=0.01)
+                stateEvolution, stateTransition = self.runFullSimulationUntilTermination(initialState, initialTime, ground_event, max_step=0.01)
                 finalState = stateEvolution.y[:,-1]
                 error = abs(finalState[3])
 
-                xCorrection = -finalState[3] / stateTransition[3,0]
-                YDotcorrection = -finalState[3] / stateTransition[3,4]
-
-                myFun = lambda p : self.getJacobi(np.array([ initialState[0] + p * xCorrection, 0, 0, 0, initialState[4] + (1 - p) * YDotcorrection, 0 ])) - energy
-                solRoot = optimize.fsolve(myFun, 0.5)
-                
-                initialState[0] += solRoot * xCorrection
-                initialState[4] += (1 - solRoot) * YDotcorrection
+                initialState[4] -= finalState[3] / stateTransition[3,4]
 
             return initialState
 
@@ -320,6 +314,22 @@ class PeriodicOrbit(Cr3bp):
         except:
             pass
 
+    def continuateSolution(self, initialState, dL):
+        u = self.massParameter
+        x, y, z, dx, dy, dz = initialState[0], initialState[1], initialState[2], initialState[3], initialState[4], initialState[5]
+        r1 = np.sqrt((u + x)**2 + y**2 + z**2)
+        r2 = np.sqrt((1 - u - x)**2 + y**2 + z**2)
+
+        dHx = - 2 * (x + u) * (1 - u) / r1**3 + 2 * (1 - u - x) * u / r2**3 + 2 * x
+        dHy = - 2 *       y * (1 - u) / r1**3 - 2 *           y * u / r2**3 + 2 * y
+        dHz = - 2 *       z * (1 - u) / r1**3 - 2 *           z * u / r2**3 
+        dHdx = - 2 * dx
+        dHdy = - 2 * dy
+        dHdz = - 2 * dz
+
+        dH = np.array( [ dHx, dHy, dHz, dHdx, dHdy, dHdz ] )
+        return initialState + dL * dH
+
 
 
 oneDay = 86400
@@ -336,7 +346,16 @@ print( (1-var.massParameter) - var.getLagrangePoint(var.LagrangePoint.l1)[0])
 initialState = np.array([ var.getLagrangePoint(var.LagrangePoint.l1)[0] + 2.36425316e-02 , 0.0 , 4.97417602e-03 , 0.0, 0.01395863, 0.0 ] )
 
 energyVertical = 3.0007380080177413
-initialState = var.getApproximateInitialState(-0.001, var.LagrangePoint.l1, var.OrbitFamily.planarLyapunov)
+initialState = var.getApproximateInitialState(lagrangePointX - 0.0001, var.LagrangePoint.l1, var.OrbitFamily.planarLyapunov)
+init = var.applyCorrectorPredictor( initialState, 0.0, var.getJacobi(initialState), var.LagrangePoint.l1, var.OrbitFamily.planarLyapunov )
+solData = var.runSimulation(init, [0.0, var.timeDimensionalToNormalized(250*oneDay)], max_step=var.timeDimensionalToNormalized(10000))
+print(initialState)
+
+for i in range(250):
+    print(i)
+    initialState = var.continuateSolution(initialState, 0.001)
+    init = var.applyCorrectorPredictor( initialState, 0.0, var.getJacobi(initialState), var.LagrangePoint.l1, var.OrbitFamily.planarLyapunov )
+solData2 = var.runSimulation(init, [0.0, var.timeDimensionalToNormalized(250*oneDay)], max_step=var.timeDimensionalToNormalized(10000))
 print(initialState)
 
 #initialStateRef = [0.988869941257861, 0.0, 0.000810869832363, 0.0, 0.00887898417849, 0.0]
@@ -348,8 +367,7 @@ print(initialState)
   
 # Vertical lyapunov test
 #approxInitialState = np.array([ lagrangePointX + 3.51729100e-05,  0.0, 0.0, 0.0, 2.52374153e-06, 2.07595002e-04 ])
-init = var.applyCorrectorPredictor( initialState, 0.0, var.getJacobi(initialState), var.LagrangePoint.l1, var.OrbitFamily.verticalLyapunov )
-solData = var.runSimulation(init, [0.0, var.timeDimensionalToNormalized(250*oneDay)], max_step=var.timeDimensionalToNormalized(10000))
+
 
 #print(initialState)
 #solData, _ = var.runFullSimulationUntilTermination(initialState, 0.0, max_step=0.001)
@@ -359,6 +377,8 @@ solData = var.runSimulation(init, [0.0, var.timeDimensionalToNormalized(250*oneD
 fig = plt.figure()
 ax = plt.axes(projection='3d')
 ax.plot3D(solData.y[0], solData.y[1], solData.y[2],'blue')
+ax.plot3D(solData2.y[0], solData2.y[1], solData2.y[2],'blue')
+
 ax.scatter(lagrangePointX, 0, 0,  c = 'r', marker='x')
 ax.scatter(1-var.massParameter, 0, 0,  c = 'r', marker='x')
 ax.set_xlabel('X')
