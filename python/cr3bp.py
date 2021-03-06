@@ -6,7 +6,6 @@ from odeintw import odeintw
 import matplotlib.pyplot as plt
 import scipy.optimize as optimize
 import scipy.integrate as integrate
-from scipy.linalg import null_space
 from mpl_toolkits.mplot3d import Axes3D
 
 class Cr3bp:
@@ -124,8 +123,7 @@ class PeriodicOrbit(Cr3bp):
     class OrbitFamily(enum.Enum):
         planarLyapunov = 1; verticalLyapunov = 2; northHalo = 3; southHalo = 4
 
-    def runFullSimulationUntilTermination( self, initialState, initialTime, terminationFunction, max_step=1, maxTime=5000.0):
-
+    def runFullSimulationUntilTermination( self, initialState, initialTime, terminationFunction, max_step=1, maxTime=5000.0):      
         tSpan = [initialTime, maxTime]
         integrator = integrate.solve_ivp(self.modelDynamicsCR3BP, tSpan, initialState, max_step=max_step, events=terminationFunction, dense_output=True) 
         stateTransFun = lambda y, t : self.stateTransitionDerivative(integrator.sol(t), y) 
@@ -133,83 +131,62 @@ class PeriodicOrbit(Cr3bp):
                 
         return integrator, stateTransitionSolution[-1]
 
-    def applyCorrectorPredictor( self, approxInitialState, initialTime, energy, lagrangePoint, orbitFamily, tol=1E-8 ):
+    def applyCorrectorPredictor( self, approxInitialState, initialTime, lagrangePoint, orbitFamily, tol=1E-8, returnHalfPeriod=False ):
+        # Initialize elements
         initialState = approxInitialState
         error = 1
 
-        ground_event = lambda t,x: x[1]#x[2]
-        ground_event.terminal = True
-        ground_event.direction = -1
+        # Select termination function according to the family
+        if orbitFamily == self.OrbitFamily.verticalLyapunov:
+            terminationCondition = lambda t,x: x[2]
+        else:
+            terminationCondition = lambda t,x: x[1]
+        terminationCondition.terminal = True
+        terminationCondition.direction = -1
 
-        if orbitFamily == self.OrbitFamily.planarLyapunov :
-            while abs(error) > tol:
-                stateEvolution, stateTransition = self.runFullSimulationUntilTermination(initialState, initialTime, ground_event, max_step=0.01)
-                finalState = stateEvolution.y[:,-1]
+        while abs(error) > tol:
+            stateEvolution, stateTransition = self.runFullSimulationUntilTermination(initialState, initialTime, terminationCondition, max_step=0.01)
+            finalState = stateEvolution.y[:,-1]
+
+            if orbitFamily == self.OrbitFamily.planarLyapunov :
                 error = abs(finalState[3])
-
                 initialState[4] -= finalState[3] / stateTransition[3,4]
-
-            return initialState
-
-            
-        elif orbitFamily in [self.OrbitFamily.northHalo, self.OrbitFamily.southHalo]: # TODO: functionize
-            while abs(error) > tol:
-                stateEvolution, stateTransition = self.runFullSimulationUntilTermination(initialState, initialTime, max_step=0.01)
-                finalState = stateEvolution.y[:,-1]
-
+    
+            elif orbitFamily in [self.OrbitFamily.northHalo, self.OrbitFamily.southHalo]: # TODO: functionize
                 # Z is kept constant only x and dy change
                 xDotError, zDotError = -finalState[3], -finalState[5]
-                print("Error:", xDotError, zDotError)
                 error = np.sqrt(xDotError**2 + zDotError**2)
                 finalStateDeriv = self.modelDynamicsCR3BP(0.0, finalState)
                 
-                # Energy condition
-                x, y, z, dy = finalState[0], finalState[1], finalState[2], finalState[4]
-                u = self.massParameter
-                r1 = np.sqrt((u + x)**2 + y**2 + z**2)
-                r2 = np.sqrt((1 - u - x)**2 + y**2 + z**2)
-                dHx = 2 * (x - (x + u) * (1 - u) / r1**3 + (1 - u - x) * u / r2**3)
-                dHz = 2 * (        - z * (1 - u) / r1**3           - z * u / r2**3)
-                dHyDot = -2 * dy
-
-                energyCond00 = dHx / dHz * (stateTransition[3,2] - stateTransition[1,2] * finalStateDeriv[3] / finalStateDeriv[1] )
-                energyCond01 = dHyDot / dHz * (stateTransition[3,2] - stateTransition[1,2] * finalStateDeriv[3] / finalStateDeriv[1] )
-                energyCond10 = dHx / dHz * (stateTransition[5,2] - stateTransition[1,2] * finalStateDeriv[5] / finalStateDeriv[1] )
-                energyCond11 = dHyDot / dHz * (stateTransition[5,2] - stateTransition[1,2] * finalStateDeriv[5] / finalStateDeriv[1] )
-
                 smallPhi = np.zeros((2,2))
-                smallPhi[0,0] = stateTransition[3,0] - stateTransition[1,0] * finalStateDeriv[3] / finalStateDeriv[1] #- energyCond00
-                smallPhi[0,1] = stateTransition[3,4] - stateTransition[1,4] * finalStateDeriv[3] / finalStateDeriv[1] #- energyCond01
-                smallPhi[1,0] = stateTransition[5,0] - stateTransition[1,0] * finalStateDeriv[5] / finalStateDeriv[1] #- energyCond10
-                smallPhi[1,1] = stateTransition[5,4] - stateTransition[1,4] * finalStateDeriv[5] / finalStateDeriv[1] #- energyCond11
+                smallPhi[0,0] = stateTransition[3,0] - stateTransition[1,0] * finalStateDeriv[3] / finalStateDeriv[1] 
+                smallPhi[0,1] = stateTransition[3,4] - stateTransition[1,4] * finalStateDeriv[3] / finalStateDeriv[1] 
+                smallPhi[1,0] = stateTransition[5,0] - stateTransition[1,0] * finalStateDeriv[5] / finalStateDeriv[1] 
+                smallPhi[1,1] = stateTransition[5,4] - stateTransition[1,4] * finalStateDeriv[5] / finalStateDeriv[1]
+
                 xCorrection, yDotCorrection = np.linalg.solve(smallPhi, np.array([xDotError, zDotError]))
-                #zCorrection = -(dHx * xCorrection + dHyDot * yDotCorrection) / dHz 
-
                 initialState[0] += xCorrection
-                #initialState[2] += zCorrection
                 initialState[4] += yDotCorrection
-                print("Initial state: ", initialState)
 
-            return initialState
-
-        elif orbitFamily == self.OrbitFamily.verticalLyapunov:
-            for _ in range(10): #while abs(error) > tol:
-                stateEvolution, stateTransition = self.runFullSimulationUntilTermination(initialState, initialTime, max_step=0.01)
-                finalState = stateEvolution.y[:,-1]
+            elif orbitFamily == self.OrbitFamily.verticalLyapunov:
+                yError, xDotError = -finalState[1], -finalState[3]
+                error = np.sqrt(xDotError**2 + yError**2)
 
                 # Z is kept constant only x and dy change
-                yError, xDotError = -finalState[1], -finalState[3]
                 finalStateDeriv = self.modelDynamicsCR3BP(0.0, finalState) 
                 smallPhi = np.zeros((2,2))
                 smallPhi[0,0] = stateTransition[1,0] - stateTransition[2,0] * finalStateDeriv[1] / finalStateDeriv[2] 
                 smallPhi[0,1] = stateTransition[1,4] - stateTransition[2,4] * finalStateDeriv[1] / finalStateDeriv[2] 
                 smallPhi[1,0] = stateTransition[3,0] - stateTransition[2,0] * finalStateDeriv[3] / finalStateDeriv[2]
                 smallPhi[1,1] = stateTransition[3,4] - stateTransition[2,4] * finalStateDeriv[3] / finalStateDeriv[2] 
-                xCorrection, yDotCorrection = np.linalg.solve(smallPhi, np.array([yError, xDotError ]))
 
+                xCorrection, yDotCorrection = np.linalg.solve(smallPhi, np.array([yError, xDotError ]))
                 initialState[0] += xCorrection
                 initialState[4] += yDotCorrection
-            
+
+        if returnHalfPeriod:
+            return initialState, stateEvolution.t[-1]
+        else:
             return initialState
 
     def getApproximateInitialState( self, familyParameter, lagrangePoint, orbitFamily ):
@@ -337,50 +314,34 @@ distanceSunEarth = 149597870700 # in m
 var = PeriodicOrbit("Sun","Earth", distanceSunEarth)
  
 lagrangePointX = var.getLagrangePoint(var.LagrangePoint.l1)[0]
-print( (1-var.massParameter) - var.getLagrangePoint(var.LagrangePoint.l1)[0])
 
-
-# Good initial state
-#initialState = np.array( [ 1.00049 , 0.0 , 0.01897 , 0.0, 0.00740, 0.0 ] )  # x = - 0.00954411
-#initialState = np.array( [ var.getLagrangePoint(var.LagrangePoint.l1)[0] + 0.0 , 0.0 , 0.00019940805 , 0.0, 0.00307086, 0.0 ] )  # MINEEEEEE
-initialState = np.array([ var.getLagrangePoint(var.LagrangePoint.l1)[0] + 2.36425316e-02 , 0.0 , 4.97417602e-03 , 0.0, 0.01395863, 0.0 ] )
-
-energyVertical = 3.0007380080177413
-initialState = var.getApproximateInitialState(lagrangePointX - 0.0001, var.LagrangePoint.l1, var.OrbitFamily.planarLyapunov)
-init = var.applyCorrectorPredictor( initialState, 0.0, var.getJacobi(initialState), var.LagrangePoint.l1, var.OrbitFamily.planarLyapunov )
-solData = var.runSimulation(init, [0.0, var.timeDimensionalToNormalized(250*oneDay)], max_step=var.timeDimensionalToNormalized(10000))
-print(initialState)
-
-for i in range(250):
-    print(i)
-    initialState = var.continuateSolution(initialState, 0.001)
-    init = var.applyCorrectorPredictor( initialState, 0.0, var.getJacobi(initialState), var.LagrangePoint.l1, var.OrbitFamily.planarLyapunov )
-solData2 = var.runSimulation(init, [0.0, var.timeDimensionalToNormalized(250*oneDay)], max_step=var.timeDimensionalToNormalized(10000))
-print(initialState)
-
-#initialStateRef = [0.988869941257861, 0.0, 0.000810869832363, 0.0, 0.00887898417849, 0.0]
-#solData, stateTrans = var.runFullSimulationUntilTermination(initialStateRef, 0.0, max_step=var.timeDimensionalToNormalized(10000))
-#init = var.applyCorrectorPredictor(initialState, 0.0)
-
-#init = var.getApproximateInitialState(3.00088801113476334, var.LagrangePoint.l1, var.OrbitFamily.planarLyapunov)
-#initState = var.applyCorrectorPredictor(init, 0.0, 3.00088801113476334, var.LagrangePoint.l1, var.OrbitFamily.planarLyapunov,tol=1E-8 )
-  
-# Vertical lyapunov test
-#approxInitialState = np.array([ lagrangePointX + 3.51729100e-05,  0.0, 0.0, 0.0, 2.52374153e-06, 2.07595002e-04 ])
-
-
-#print(initialState)
-#solData, _ = var.runFullSimulationUntilTermination(initialState, 0.0, max_step=0.001)
-#solData = var.runSimulation(approxInitialState, [0.0, var.timeDimensionalToNormalized(20*oneDay)], max_step=var.timeDimensionalToNormalized(10000))
-
+#### Four types of orbit test ####
+lagrangePoint = var.LagrangePoint.l1
+# PLANAR LYAPUNOV
+approxInitialState = var._approxInitialStatePlanar(lagrangePointX-0.0009, lagrangePoint)
+initialState, halfPeriod = var.applyCorrectorPredictor(approxInitialState, 0.0, lagrangePoint, var.OrbitFamily.planarLyapunov, returnHalfPeriod=True)
+solData1 = var.runSimulation(initialState, [0.0, 2*halfPeriod], 0.01)
+# HALO NORTH
+approxInitialState = var._approxInitialState3D(1.001, lagrangePoint, var.OrbitFamily.northHalo)
+initialState, halfPeriod = var.applyCorrectorPredictor(approxInitialState, 0.0, lagrangePoint, var.OrbitFamily.northHalo, returnHalfPeriod=True)
+solData2 = var.runSimulation(initialState, [0.0, 2*halfPeriod], 0.01)
+# SOUTH NORTH
+approxInitialState = var._approxInitialState3D(1.001, lagrangePoint, var.OrbitFamily.southHalo)
+initialState, halfPeriod = var.applyCorrectorPredictor(approxInitialState, 0.0, lagrangePoint, var.OrbitFamily.southHalo, returnHalfPeriod=True)
+solData3 = var.runSimulation(initialState, [0.0, 2*halfPeriod], 0.01)
+# VERTICAL LYAPUNOV
+approxInitialState = var._approxInitialState3D(1, lagrangePoint, var.OrbitFamily.verticalLyapunov)
+initialState, halfPeriod = var.applyCorrectorPredictor(approxInitialState, 0.0, lagrangePoint, var.OrbitFamily.verticalLyapunov, returnHalfPeriod=True)
+solData4 = var.runSimulation(initialState, [0.0, 4*halfPeriod], 0.01)
 
 fig = plt.figure()
 ax = plt.axes(projection='3d')
-ax.plot3D(solData.y[0], solData.y[1], solData.y[2],'blue')
-ax.plot3D(solData2.y[0], solData2.y[1], solData2.y[2],'blue')
-
+ax.plot3D(solData1.y[0], solData1.y[1], solData1.y[2],'blue')
+ax.plot3D(solData2.y[0], solData2.y[1], solData2.y[2],'black')
+ax.plot3D(solData3.y[0], solData3.y[1], solData3.y[2],'red')
+ax.plot3D(solData4.y[0], solData4.y[1], solData4.y[2],'green')
 ax.scatter(lagrangePointX, 0, 0,  c = 'r', marker='x')
-ax.scatter(1-var.massParameter, 0, 0,  c = 'r', marker='x')
+#ax.scatter(1-var.massParameter, 0, 0,  c = 'r', marker='x')
 ax.set_xlabel('X')
 ax.set_ylabel('Y')
 ax.set_zlabel('Z')
