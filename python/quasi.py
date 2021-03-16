@@ -1,40 +1,14 @@
 import numpy as np
 from scipy.interpolate import griddata
+from scipy.linalg import dft
 from itertools import permutations
 from scipy.special import roots_legendre
-from scipy.sparse import lil_matrix
+from scipy.sparse import lil_matrix, csc_matrix
+from scipy.sparse.linalg import inv
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
+import matplotlib.pylab as plt
 from cr3bp import Cr3bp, PeriodicOrbit
-
-def getSubBlock( stateGuess, massParameter, derivativeTerm, period ):
-    """
-    Method that returns the (Jacobi) subblock at each collocation point.
-    """
-    x, y, z = stateGuess[0], stateGuess[1], stateGuess[2]
-    u = massParameter
-    r1 = np.sqrt((u + x)**2 + y**2 + z**2)
-    r2 = np.sqrt((1 - u - x)**2 + y**2 + z**2)
-
-    subBlock = np.eye(6) * derivativeTerm
-    subBlock[0,3] = subBlock[1,4] = subBlock[2,5] = -period
-    subBlock[3,4] = -2 * period
-    subBlock[4,3] = +2 * period
-
-    subBlock[3,0] = 1 + 3 * (1 - u) * (x + u)**2 / r1**5 - (1 - u) / r1**3 + 3 * u * (1 - u - x)**2 / r2**5 - u / r2**3
-    subBlock[3,1] = 3 * (1 - u) * (x + u) * y / r1**5 - 3 * u * (1 - u - x) * y / r2**5
-    subBlock[3,2] = 3 * (1 - u) * (x + u) * z / r1**5 - 3 * u * (1 - u - x) * z / r2**5
-
-    subBlock[4,0] = 3 * (1 - u) * (x + u) * y / r1**5 - 3 * u * (1 - u - x) * y / r2**5
-    subBlock[4,1] = 1 + 3 * (1 - u) * y**2 / r1**5 - (1 - u) / r1**3 + 3 * u * y**2 / r2**5 - u / r2**3
-    subBlock[4,2] = 3 * (1 - u) * y * z / r1**5 + 3 * u * y * z / r2**5
-
-    subBlock[5,0] = 3 * (1 - u) * (x + u) * z / r1**5 - 3 * u * (1 - u - x) * z / r2**5
-    subBlock[5,1] = 3 * (1 - u) * y * z / r1**5 + 3 * u * y * z / r2**5
-    subBlock[5,2] = 3 * (1 - u) * z**2 / r1**5 - (1 - u) / r1**3 + 3 * u * z**2 / r2**5 - u / r2**3
-
-    return subBlock
-
 
 fileName1 = "planarLyapunovNew.dat"
 oneDay = 86400
@@ -89,7 +63,7 @@ class QuasiPeriodic(Cr3bp):
         collocationTorus = dict()
         for i, t in enumerate(gaussLegrendreArray):
             circle = []
-            for a in range(N2-1):
+            for a in range(N2):
                 circle.append(solInterpolator[a,i])
             collocationTorus.update({t: circle})
 
@@ -240,13 +214,230 @@ class QuasiPeriodic(Cr3bp):
                 sol += 1 / (self.tauHat(time,ti,tii) - self.tauHat(timeJ,ti,tii))
         return sol * self.lagrangePolynomial(time, timeK, timeSegment)
 
-    def computeJacobian( self, guessTorus, N1, N2, m):
+    def computeJacobian( self, guessTorus, previousSolution, T, rho, w1, w2, N1, N2, m ):
         # Allocate sparse matrix
-        dim = (N1 * (m + 1) + 1) * N2 * 6 + 6
-        jMatrix = lil_matrix((dim, dim))
-        jMatrix[0:3,0:3] = np.eye(3)
-        
+        dimState = 6
+        dimJacobian = (N1 * (m + 1) + 1) * N2 * dimState
+        scalarEquation = 2
+        jMatrix = lil_matrix((dimJacobian + scalarEquation, dimJacobian + scalarEquation))
 
+        timeSegments = np.linspace(0, 1, N1 + 1)
+        collocationArray = self.createGaussLegendreCollocationArray(N1,m)
+        
+        # Iterate for times and fill array
+        for numSegment in range(N1):
+            timeSegment = [x for x in collocationArray if timeSegments[numSegment] <= x <= timeSegments[numSegment+1]]
+
+            # Collocation points
+            for numCollocation in range(m):
+                time = timeSegment[numCollocation+1]
+
+                for numState, state in enumerate(guessTorus[time]):
+                    
+                    # Jacobian of each collocation point
+                    rowCollocationState = numSegment * (m + 1) * N2 * dimState + numCollocation * N2 * dimState + numState * dimState
+                    colCollocationState = rowCollocationState + N2 * dimState
+                    derivativeTerm = (timeSegment[-1] - timeSegment[0]) * self.lagrangePolynomialDerivative(time, time, timeSegment)
+                    jMatrix[rowCollocationState:rowCollocationState+dimState, colCollocationState:colCollocationState+dimState] = \
+                        lil_matrix.astype( self.getJacobianState(state, derivativeTerm, T), dtype=np.double )
+
+                    # Continuity conditions
+                    rowContinuityCond = (numSegment + 1) * (N2 * m * dimState) + numSegment * N2 * dimState + numState * dimState
+                    colFirstContinuityCond = numSegment * N2 * (m + 1) * dimState + numState * dimState
+
+                    # Fill first continuity condition
+                    if numCollocation == 0:
+                        jMatrix[rowContinuityCond:rowContinuityCond+dimState, colFirstContinuityCond:colFirstContinuityCond+dimState] = \
+                            lil_matrix.astype( np.eye(6) * self.lagrangePolynomial(1, time, timeSegment), dtype=np.double )
+                    
+                    # Fill continuity condition
+                    jMatrix[rowContinuityCond:rowContinuityCond+dimState,colCollocationState:colCollocationState+dimState] = \
+                            lil_matrix.astype(np.eye(6) * self.lagrangePolynomial(1, time, timeSegment), dtype=np.double )
+                    
+                    # Fill right column derivatives
+                    # Period derivative 
+                    jMatrix[rowCollocationState:rowCollocationState+dimState, dimJacobian] = -self.modelDynamicsCR3BP(0.0, state).reshape(6,1)
+
+                    # Derivative wrt L1
+                    # jMatrix[count:count+6,(N1 * (m + 1) + 1) * N2 * 6] = self.getHamiltonianDerivative(state).reshape(6,1)
+                    # # Derivative wrt L2
+                    # if j != len(circleStates)-1:
+                    #     deltaTheta2 = (circleStates[j+1] - state) / N2
+                    # else:
+                    #     deltaTheta2 = (circleStates[0] - state) / N2
+                    # jMatrix[count:count+6,(N1 * (m + 1) + 1) * N2 * 6 + 1] =  self.getI2Derivative(deltaTheta2).reshape(6,1)
+                    # # Derivaive T
+                    # 
+
+                    # # Scalar equations dependent on the state # TODO: Complete
+                    # # Phase condition 1
+                    # jMatrix[depthScalarConditions,count:count+6] = self.getGradientPhase1(previousSolution)
+                    # # Phase condition 2
+                    # jMatrix[depthScalarConditions+1,count:count+6] = self.getGradientPhase2(previousSolution)
+                    # # Energy condition
+                    # jMatrix[depthScalarConditions+2,count:count+6] = self.getGradientHamiltonian(state)
+                    # # Arc length
+                    # jMatrix[depthScalarConditions+3,count:count+6] = self.getGradientArcLength()
+
+                    # Update counter 
+
+            # Equally spaced terms N1
+            # Last continuity term
+            rowContinuityCond = (numSegment + 1) * m * N2 * dimState + numSegment * N2 * dimState
+            colContinuityCond = rowContinuityCond + N2 * dimState
+            jMatrix[rowContinuityCond:rowContinuityCond + N2*dimState,colContinuityCond:colContinuityCond + N2*dimState] = \
+                lil_matrix.astype( -np.eye(N2 * dimState), dtype=np.double )
+
+            for numState, state in enumerate(guessTorus[timeSegment[-1]]):
+                # Period derivative 
+                jMatrix[rowContinuityCond+numState*dimState:rowContinuityCond+(1+numState)*dimState, dimJacobian] = \
+                    -self.modelDynamicsCR3BP(0.0, state).reshape(6,1)
+    
+        # Periodicity condition
+        rowPeriodicityCond = N1 * (m + 1) * N2 * dimState
+        jMatrix[rowPeriodicityCond:rowPeriodicityCond+N2*dimState, 0:N2*dimState] = np.eye(N2*dimState)
+        jMatrix[rowPeriodicityCond:rowPeriodicityCond+N2*dimState, rowPeriodicityCond:rowPeriodicityCond+N2*dimState] = \
+            lil_matrix.astype( self.getRotationMatrix(rho,N2), dtype=np.double )
+
+        # Rho derivative
+        rotationMatrix =  np.linalg.inv(dft(N2)) @ (np.log(dft(N2)) @ np.power(dft(N2), -rho))
+        jacobianRotationMatrix = np.zeros((N2*6,N2*6))
+        for i in range(N2):
+            for j in range(N2):
+                jacobianRotationMatrix[i*6:i*6+6,j*6:j*6+6] = np.eye(6) * rotationMatrix[i,j].real
+        
+        stateLarge = np.array([])
+        for state in guessTorus[timeSegment[-1]]:
+            stateLarge = np.concatenate((stateLarge, state))
+                
+        jMatrix[rowPeriodicityCond:rowPeriodicityCond+N2*dimState, dimJacobian+1] = \
+                    jacobianRotationMatrix @ np.array(stateLarge).reshape(N2*dimState,1)
+                           
+        # Phase conditions
+        jMatrix[dimJacobian, 0:N2*dimState] = self.getPhaseCond1(guessTorus[0.0], previousSolution, N2)
+        jMatrix[dimJacobian+1, 0:N2*dimState] = self.getPhaseCond2(guessTorus[0.0], previousSolution, N2)
+
+        # Extra relationships
+        # jMatrix[dimJacobian+2, dimJacobian:dimJacobian+4] = np.array([w1, 0, T, 0])
+        # jMatrix[dimJacobian+3, dimJacobian:dimJacobian+4] = np.array([w2, -1, 0, T])
+
+        # Convert to crc sparse matrix (improves operations)
+        return csc_matrix(jMatrix)
+
+    def getPhaseCond1( self, firstCircle, previousSolution, N2 ):
+        keysPrevSol = list(previousSolution.keys())
+        dt = keysPrevSol[1] - keysPrevSol[0]
+        phaseCond1Array = np.zeros(N2*6)
+
+        for numState in range(len(firstCircle)):
+            prevTimeDerivative = (previousSolution[keysPrevSol[1]][numState] - previousSolution[keysPrevSol[0]][numState]) / dt
+            phaseCond1Array[numState*6:numState*6+6] = prevTimeDerivative / len(firstCircle)
+
+        return phaseCond1Array
+
+    def getPhaseCond2( self, firstCircle, previousSolution, N2 ):
+        phaseCond1Array = np.zeros(N2*6)
+        dtheta = 1 / N2
+
+        for numState, state in enumerate(firstCircle):
+            if numState == len(firstCircle) - 1:
+                nextState = firstCircle[0]
+            else:
+                nextState = firstCircle[numState+1]
+
+            prevTimeDerivative = (nextState - state) / dtheta
+            phaseCond1Array[numState*6:numState*6+6] = prevTimeDerivative / len(firstCircle)
+
+        return phaseCond1Array     
+
+    def getRotationMatrix( self, rho, N2 ):
+        # Creates rotation matrix
+        rotationMatrix = np.linalg.inv(dft(N2)) @ np.power(dft(N2), -rho)
+
+        jacobianRotationMatrix = np.zeros((N2*6,N2*6))
+        for i in range(N2):
+            for j in range(N2):
+                jacobianRotationMatrix[i*6:i*6+6,j*6:j*6+6] = np.eye(6) * rotationMatrix[i,j].real
+
+        return jacobianRotationMatrix
+
+    def getGradientPhase1( self, previousTorus ):
+        return 0
+
+    def getGradientPhase2( self, previousTorus ):
+        return 0
+
+    def getGradientHamiltonian( self, state ):
+        x, y, z, dx, dy, dz = state
+        u = self.massParameter
+        r1 = np.sqrt((u + x)**2 + y**2 + z**2)
+        r2 = np.sqrt((1 - u - x)**2 + y**2 + z**2)
+
+        hx = 2 * x - 2 * (x + u) * (1 - u) / r1**3 + 2 * (1 - u - x) * u / r2**3
+        hy = 2 * y -       2 * y * (1 - u) / r1**3 -           2 * y * u / r2**3
+        hz =       -       2 * z * (1 - u) / r1**3 -           2 * z * u / r2**3
+        hdx = -2 * dx
+        hdy = -2 * dy
+        hdz = -2 * dz
+
+        return np.array([hx, hy, hz, hdx, hdy, hdz])
+
+    def getGradientArcLength( self ):
+        return 0
+
+    def getHamiltonianDerivative( self, stateGuess ):
+        x, y, z, dx, dy, dz = stateGuess[0], stateGuess[1], stateGuess[2], stateGuess[3], stateGuess[4], stateGuess[5]
+        u = self.massParameter
+        r1 = np.sqrt((u + x)**2 + y**2 + z**2)
+        r2 = np.sqrt((1 - u - x)**2 + y**2 + z**2)
+
+        hx = 2 * x - 2 * (x + u) * (1 - u) / r1**3 + 2 * (1 - u - x) * u / r2**3
+        hy = 2 * y -       2 * y * (1 - u) / r1**3 -           2 * y * u / r2**3
+        hz =       -       2 * z * (1 - u) / r1**3 -           2 * z * u / r2**3
+        hdx = -2 * dx
+        hdy = -2 * dy
+        hdz = -2 * dz
+
+        return np.array([hx, hy, hz, hdx, hdy, hdz])
+
+    def getI2Derivative( self, deltaTheta2 ):
+        transMatrix = np.zeros((6,6))
+        transMatrix[0,1] = 2
+        transMatrix[1,0] = -2
+        transMatrix[0:3,3:6] = -np.eye(3)
+        transMatrix[3:6,0:3] = +np.eye(3)
+
+        return transMatrix @ deltaTheta2
+
+    def getJacobianState( self, stateGuess, derivativeTerm, period ):
+        """
+        Method that returns the (Jacobi) subblock at each collocation point.
+        """
+        x, y, z = stateGuess[0], stateGuess[1], stateGuess[2]
+        u = self.massParameter
+        r1 = np.sqrt((u + x)**2 + y**2 + z**2)
+        r2 = np.sqrt((1 - u - x)**2 + y**2 + z**2)
+
+        subBlock = np.eye(6) * derivativeTerm
+
+        derivativeF = np.zeros((6,6))
+        derivativeF[0,3] = derivativeF[1,4] = derivativeF[2,5] = 1
+        derivativeF[3,4] = +2
+        derivativeF[4,3] = -2
+
+        derivativeF[3,0] = 1 + 3 * (1 - u) * (x + u)**2 / r1**5 - (1 - u) / r1**3 + 3 * u * (1 - u - x)**2 / r2**5 - u / r2**3
+        derivativeF[3,1] = 3 * (1 - u) * (x + u) * y / r1**5 - 3 * u * (1 - u - x) * y / r2**5
+        derivativeF[3,2] = 3 * (1 - u) * (x + u) * z / r1**5 - 3 * u * (1 - u - x) * z / r2**5
+
+        derivativeF[4,0] = 3 * (1 - u) * (x + u) * y / r1**5 - 3 * u * (1 - u - x) * y / r2**5
+        derivativeF[4,1] = 1 + 3 * (1 - u) * y**2 / r1**5 - (1 - u) / r1**3 + 3 * u * y**2 / r2**5 - u / r2**3
+        derivativeF[4,2] = 3 * (1 - u) * y * z / r1**5 + 3 * u * y * z / r2**5
+
+        derivativeF[5,0] = 3 * (1 - u) * (x + u) * z / r1**5 - 3 * u * (1 - u - x) * z / r2**5
+        derivativeF[5,1] = 3 * (1 - u) * y * z / r1**5 + 3 * u * y * z / r2**5
+        derivativeF[5,2] = 3 * (1 - u) * z**2 / r1**5 - (1 - u) / r1**3 + 3 * u * z**2 / r2**5 - u / r2**3
+
+        return subBlock - period * derivativeF
 
 N1 = 5
 N2 = 5
@@ -257,5 +448,8 @@ seedTorus = foo.createSeedTorus(solData, stateTransition, N2, 1E-3)
 collocationTorus = foo.transformToCollocationSeedTorus(seedTorus, N1, N2, m, 0.2)
 previousSolution = 0
 sol = foo.computeF(collocationTorus, previousSolution, 0, 0, 0, 0, 0, 0, 3.12, 0.1, N1, N2, m)
-foo.computeJacobian(collocationTorus, N1, N2, m)
+jacobian = foo.computeJacobian(collocationTorus, seedTorus, 3.12, 1, 1/3.12, 1, N1, N2, m)
+b = inv(jacobian)
+plt.spy(b)
+plt.show()
 print("Test")
