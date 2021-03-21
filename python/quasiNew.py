@@ -320,7 +320,7 @@ def getCollocationSystem( torus, var, prevTorus, prevVar, tanTorus, tanVar, cons
             # Phase condition 1
             phaseCondition1 += np.dot(state - prevTorus[time][numState], dxdth1Section)
             # Phase condition 2
-            phaseCondition2 += np.dot(state, dxdth2Section)
+            phaseCondition2 += np.dot(state - prevTorus[time][numState], dxdth2Section)
             # Energy condition  
             energyCondition += getJacobi(state)
             # Pseudo-arc length condition
@@ -375,7 +375,7 @@ def getJacobianCR3BP( state ):
 # Method to compute the derivative of the rotation matrix
 def getRotMatDer( N, rho ):
     # Create rotation matrix
-    vect = np.array([1j * k * 2 * np.pi * np.exp(1j * 2 * np.pi * rho * k ) for k in np.concatenate([np.arange(0,N//2), [0], np.arange(-N//2+1,0)])])
+    vect = np.array([-1j * k * 2 * np.pi * np.exp(1j * 2 * np.pi * rho * k ) for k in np.concatenate([np.arange(0,N//2), [0], np.arange(-N//2+1,0)])])
     dft = fft(np.eye(N))
     rotDer = np.linalg.inv(dft) @ ( np.eye(N).T * vect).T @ dft
     return expandMatrix(rotDer.real, N)
@@ -511,7 +511,7 @@ var = prevVar
 print("Test starting...")
 fig = plt.figure()
 ax = plt.axes(projection='3d')
-for i in range(10):
+for i in range(5):
     print(i, guessSol[0.0][0])
     fArray = getCollocationSystem( guessSol, var, prevSol, prevVar, tanTorus, prevVar, const, N1, N2, m)
     jacobian = getJacobianCollocation( guessSol, var, prevSol, prevVar, tanTorus, prevVar, const, N1, N2, m)
@@ -524,4 +524,4 @@ for i in range(10):
     guessSol = createTorus(newGuess, guessSol, N2)
     printTorus(guessSol) 
 plt.show()
-    
+
